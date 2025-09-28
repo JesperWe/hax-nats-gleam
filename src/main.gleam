@@ -3,7 +3,7 @@ import gleam/string
 import mug
 
 pub fn main() {
-  io.println("Sockets FTW")
+  io.println("Nats Connect")
 
   let socket = case
     mug.new("localhost", port: 4222)
