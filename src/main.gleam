@@ -31,6 +31,121 @@ pub fn parse_server_info_json(
   }
 }
 
+pub fn server_reply(packet: BitArray) -> Result(String, BitArrayError) {
+  packet
+  |> bit_array.to_string
+  |> result.map_error(fn(_) { ToStringFailed })
+}
+
+// Close the NATS connection gracefully
+pub fn close_connection(socket: mug.Socket) -> Nil {
+  io.println("Closing NATS connection...")
+  case mug.shutdown(socket) {
+    Ok(_) -> io.println("Connection closed successfully")
+    Error(err) ->
+      io.println("Error closing connection: " <> string.inspect(err))
+  }
+}
+
+// Continuously receive messages until interrupted
+pub fn receive_messages_loop(socket: mug.Socket) -> Nil {
+  case mug.receive(socket, timeout_milliseconds: 1000) {
+    Ok(packet) -> {
+      case server_reply(packet) {
+        Ok(reply) -> {
+          // Check if it's a PING message
+          case string.trim(reply) {
+            "PING" -> {
+              io.println("Received: PING")
+              // Send PONG reply
+              case mug.send(socket, bit_array.from_string("PONG\r\n")) {
+                Ok(_) -> io.println("Sent: PONG")
+                Error(err) -> 
+                  io.println("Error sending PONG: " <> string.inspect(err))
+              }
+              receive_messages_loop(socket)
+            }
+            _ -> {
+              io.println("Message: " <> reply)
+              receive_messages_loop(socket)
+            }
+          }
+        }
+        Error(_) -> {
+          io.println("Error parsing message")
+          receive_messages_loop(socket)
+        }
+      }
+    }
+    Error(mug.Timeout) -> {
+      // Timeout is normal, just continue waiting
+      receive_messages_loop(socket)
+    }
+    Error(err) -> {
+      io.println("Error receiving message: " <> string.inspect(err))
+      // Continue trying to receive messages
+      receive_messages_loop(socket)
+    }
+  }
+}
+
+pub fn run_nats_client(socket: mug.Socket) -> Result(Nil, mug.Error) {
+  // Receive server INFO
+  use packet <- result.try(mug.receive(socket, timeout_milliseconds: 1000))
+
+  let info_result =
+    packet
+    |> bit_array.to_string
+    |> result.map(string.drop_start(_, 5))
+    |> result.map_error(fn(_) { ToStringFailed })
+    |> parse_server_info_json
+
+  case info_result {
+    Ok(info) -> io.println(json.to_string(server_info_encoder(info)))
+    Error(err) ->
+      io.println("Error parsing server info: " <> string.inspect(err))
+  }
+
+  let connect_json =
+    ClientConnect(
+      verbose: True,
+      pedantic: False,
+      tls_required: False,
+      name: "hax-client",
+      lang: "gleam",
+      version: "0.1.0",
+      protocol: 1,
+      echo_enabled: True,
+    )
+    |> client_connect_encoder
+    |> json.to_string
+
+  let connect_command = "CONNECT " <> connect_json <> "\r\n"
+  use _ <- result.try(mug.send(socket, bit_array.from_string(connect_command)))
+  io.println("Sent: CONNECT")
+
+  use packet <- result.try(mug.receive(socket, timeout_milliseconds: 1000))
+  case server_reply(packet) {
+    Ok(reply) -> io.println("Reply: " <> reply)
+    Error(_) -> io.println("Error parsing reply")
+  }
+
+  use _ <- result.try(mug.send(socket, bit_array.from_string("SUB > 1\r\n")))
+  io.println("Sent: SUB >")
+
+  use packet <- result.try(mug.receive(socket, timeout_milliseconds: 1000))
+  case server_reply(packet) {
+    Ok(reply) -> io.println("Reply: " <> reply)
+    Error(_) -> io.println("Error parsing reply")
+  }
+
+  // Start receiving messages continuously
+  io.println("Waiting for messages... (Press Ctrl+C to stop)")
+  receive_messages_loop(socket)
+
+  Ok(Nil)
+}
+
 pub fn main() {
   io.println("Nats Connect")
 
@@ -79,34 +194,15 @@ pub fn main() {
 
   io.println(string.inspect(socket))
 
-  let assert Ok(packet) = mug.receive(socket, timeout_milliseconds: 1000)
-  io.println("Received: " <> string.inspect(bit_array.to_string(packet)))
-
-  let assert Ok(info) =
-    packet
-    |> bit_array.to_string
-    |> result.map(string.drop_start(_, 5))
-    |> result.map_error(fn(_) { ToStringFailed })
-    |> parse_server_info_json
-
-  io.println(json.to_string(server_info_encoder(info)))
-
-  let connect_json =
-    ClientConnect(
-      verbose: True,
-      pedantic: False,
-      tls_required: False,
-      name: "hax-client",
-      lang: "gleam",
-      version: "0.1.0",
-      protocol: 1,
-      echo_enabled: True,
-    )
-    |> client_connect_encoder
-    |> json.to_string
-
-  let connect_command = "CONNECT " <> connect_json <> "\r\n"
-  let assert Ok(_) = mug.send(socket, bit_array.from_string(connect_command))
-
-  io.println("CONNECT message sent: " <> connect_command)
+  // Run the NATS client with error handling
+  case run_nats_client(socket) {
+    Ok(_) -> {
+      io.println("NATS client operations completed successfully")
+      close_connection(socket)
+    }
+    Error(err) -> {
+      io.println("Error during NATS operations: " <> string.inspect(err))
+      close_connection(socket)
+    }
+  }
 }
