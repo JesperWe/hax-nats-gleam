@@ -2,7 +2,18 @@ name = "nats_gleam"
 version = "0.1.0"
 
 target = "erlang"
-dependencies = { logging = ">= 1.3.0 and < 2.0.0", gleam_erlang = ">= 1.3.0 and < 2.0.0", gleam_otp = ">= 1.1.0 and < 2.0.0", gleam_yielder = ">= 1.1.0 and < 2.0.0", gleam_time = ">= 1.4.0 and < 2.0.0", gleam_stdlib = ">= 0.64.0 and < 1.0.0", gleam_json = ">= 3.0.2 and < 4.0.0", mug = ">= 3.1.0 and < 4.0.0" }
+
+[dependencies]
+logging = ">= 1.3.0 and < 2.0.0"
+gleam_erlang = ">= 1.3.0 and < 2.0.0"
+gleam_otp = ">= 1.1.0 and < 2.0.0"
+gleam_yielder = ">= 1.1.0 and < 2.0.0"
+gleam_time = ">= 1.4.0 and < 2.0.0"
+gleam_json = ">= 3.0.2 and < 4.0.0"
+mug = ">= 3.1.0 and < 4.0.0"
+simplifile = ">= 2.3.0 and < 3.0.0"
+gleam_stdlib = ">= 0.65.0 and < 1.0.0"
+envoy = ">= 1.0.2 and < 2.0.0"
 
 [requirements]
 gleam = ">= 1.12.0"
