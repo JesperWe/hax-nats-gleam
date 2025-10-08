@@ -11,30 +11,19 @@ import json_types/serverinfo.{
 }
 import mug
 
-pub type BitArrayError {
-  ToStringFailed
-}
-
 pub type ParseError {
-  BitArrayError(BitArrayError)
+  StringConversionError
   JsonDecodeError(json.DecodeError)
 }
 
 pub fn parse_server_info_json(
-  result: Result(String, BitArrayError),
-) -> Result(ServerInfo, ParseError) {
-  case result {
-    Ok(json) ->
-      json.parse(from: json, using: server_info_decoder())
-      |> result.map_error(JsonDecodeError)
-    Error(err) -> Error(BitArrayError(err))
-  }
+  json_string: String,
+) -> Result(ServerInfo, json.DecodeError) {
+  json.parse(from: json_string, using: server_info_decoder())
 }
 
-pub fn server_reply(packet: BitArray) -> Result(String, BitArrayError) {
-  packet
-  |> bit_array.to_string
-  |> result.map_error(fn(_) { ToStringFailed })
+pub fn server_reply(packet: BitArray) -> Result(String, Nil) {
+  bit_array.to_string(packet)
 }
 
 // Close the NATS connection gracefully
@@ -47,63 +36,53 @@ pub fn close_connection(socket: mug.Socket) -> Nil {
   }
 }
 
-// Continuously receive messages until interrupted
-pub fn receive_messages_loop(socket: mug.Socket) -> Nil {
-  case mug.receive(socket, timeout_milliseconds: 1000) {
-    Ok(packet) -> {
-      case server_reply(packet) {
-        Ok(reply) -> {
-          // Check if it's a PING message
-          case string.trim(reply) {
-            "PING" -> {
-              io.println("Received: PING")
-              // Send PONG reply
-              case mug.send(socket, bit_array.from_string("PONG\r\n")) {
-                Ok(_) -> io.println("Sent: PONG")
-                Error(err) -> 
-                  io.println("Error sending PONG: " <> string.inspect(err))
-              }
-              receive_messages_loop(socket)
-            }
-            _ -> {
-              io.println("Message: " <> reply)
-              receive_messages_loop(socket)
-            }
-          }
-        }
-        Error(_) -> {
-          io.println("Error parsing message")
-          receive_messages_loop(socket)
-        }
-      }
-    }
-    Error(mug.Timeout) -> {
-      // Timeout is normal, just continue waiting
-      receive_messages_loop(socket)
-    }
-    Error(err) -> {
-      io.println("Error receiving message: " <> string.inspect(err))
-      // Continue trying to receive messages
-      receive_messages_loop(socket)
-    }
+fn handle_ping(socket: mug.Socket) -> Nil {
+  io.println("Received: PING")
+  case mug.send(socket, bit_array.from_string("PONG\r\n")) {
+    Ok(_) -> io.println("Sent: PONG")
+    Error(err) -> io.println("Error sending PONG: " <> string.inspect(err))
   }
 }
 
+fn process_packet(socket: mug.Socket, packet: BitArray) -> Nil {
+  case server_reply(packet) {
+    Ok(reply) -> {
+      case string.trim(reply) {
+        "PING" -> handle_ping(socket)
+        _ -> io.println("Message: " <> reply)
+      }
+    }
+    Error(_) -> io.println("Error parsing message")
+  }
+}
+
+pub fn receive_messages_loop(socket: mug.Socket) -> Nil {
+  case mug.receive(socket, timeout_milliseconds: 1000) {
+    Ok(packet) -> process_packet(socket, packet)
+    Error(mug.Timeout) -> Nil
+    // Timeout is normal, just continue
+    Error(err) -> io.println("Error receiving message: " <> string.inspect(err))
+  }
+  receive_messages_loop(socket)
+}
+
 pub fn run_nats_client(socket: mug.Socket) -> Result(Nil, mug.Error) {
-  // Receive server INFO
   use packet <- result.try(mug.receive(socket, timeout_milliseconds: 1000))
 
-  let info_result =
-    packet
-    |> bit_array.to_string
-    |> result.map(string.drop_start(_, 5))
-    |> result.map_error(fn(_) { ToStringFailed })
-    |> parse_server_info_json
-
-  case info_result {
-    Ok(info) -> io.println(json.to_string(server_info_encoder(info)))
-    Error(err) ->
-      io.println("Error parsing server info: " <> string.inspect(err))
+  case bit_array.to_string(packet) {
+    Ok(str) -> {
+      case
+        json.parse(
+          from: string.drop_start(str, 5),
+          using: server_info_decoder(),
+        )
+      {
+        Ok(info) -> io.println(json.to_string(server_info_encoder(info)))
+        Error(err) ->
+          io.println("Error parsing server info: " <> string.inspect(err))
+      }
+    }
+    Error(_) -> io.println("Error converting packet to string")
   }
 
   let connect_json =
@@ -139,7 +118,6 @@ pub fn run_nats_client(socket: mug.Socket) -> Result(Nil, mug.Error) {
     Error(_) -> io.println("Error parsing reply")
   }
 
-  // Start receiving messages continuously
   io.println("Waiting for messages... (Press Ctrl+C to stop)")
   receive_messages_loop(socket)
 
