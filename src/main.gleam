@@ -11,11 +11,6 @@ import json_types/serverinfo.{
 }
 import mug
 
-pub type ParseError {
-  StringConversionError
-  JsonDecodeError(json.DecodeError)
-}
-
 pub fn parse_server_info_json(
   json_string: String,
 ) -> Result(ServerInfo, json.DecodeError) {
