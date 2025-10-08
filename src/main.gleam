@@ -66,25 +66,51 @@ pub fn receive_messages_loop(socket: mug.Socket) -> Nil {
   receive_messages_loop(socket)
 }
 
-pub fn run_nats_client(socket: mug.Socket) -> Result(Nil, mug.Error) {
-  use packet <- result.try(mug.receive(socket, timeout_milliseconds: 1000))
+pub fn nats_server_connect(
+  host: String,
+  port: Int,
+) -> Result(#(mug.Socket, ServerInfo), String) {
+  // Create and connect socket
+  use socket <- result.try(
+    mug.new(host, port: port)
+    |> mug.timeout(milliseconds: 500)
+    |> mug.connect()
+    |> result.map_error(fn(err) { "Connection failed: " <> string.inspect(err) }),
+  )
 
-  case bit_array.to_string(packet) {
-    Ok(str) -> {
-      case
-        json.parse(
-          from: string.drop_start(str, 5),
-          using: server_info_decoder(),
-        )
-      {
-        Ok(info) -> io.println(json.to_string(server_info_encoder(info)))
-        Error(err) ->
-          io.println("Error parsing server info: " <> string.inspect(err))
-      }
-    }
-    Error(_) -> io.println("Error converting packet to string")
-  }
+  io.println("Connected!")
 
+  // Receive initial INFO message
+  use packet <- result.try(
+    mug.receive(socket, timeout_milliseconds: 1000)
+    |> result.map_error(fn(err) {
+      close_connection(socket)
+      "Failed to receive INFO message: " <> string.inspect(err)
+    }),
+  )
+
+  // Convert packet to string
+  use str <- result.try(
+    bit_array.to_string(packet)
+    |> result.map_error(fn(_) {
+      close_connection(socket)
+      "Failed to convert INFO packet to string"
+    }),
+  )
+
+  // Parse INFO message (skip "INFO " prefix)
+  use info <- result.try(
+    json.parse(from: string.drop_start(str, 5), using: server_info_decoder())
+    |> result.map_error(fn(err) {
+      close_connection(socket)
+      "Failed to parse server info: " <> string.inspect(err)
+    }),
+  )
+
+  io.println("Received server info:")
+  io.println(json.to_string(server_info_encoder(info)))
+
+  // Send CONNECT message
   let connect_json =
     ClientConnect(
       verbose: True,
@@ -100,15 +126,35 @@ pub fn run_nats_client(socket: mug.Socket) -> Result(Nil, mug.Error) {
     |> json.to_string
 
   let connect_command = "CONNECT " <> connect_json <> "\r\n"
-  use _ <- result.try(mug.send(socket, bit_array.from_string(connect_command)))
+
+  use _ <- result.try(
+    mug.send(socket, bit_array.from_string(connect_command))
+    |> result.map_error(fn(err) {
+      close_connection(socket)
+      "Failed to send CONNECT: " <> string.inspect(err)
+    }),
+  )
+
   io.println("Sent: CONNECT")
 
-  use packet <- result.try(mug.receive(socket, timeout_milliseconds: 1000))
-  case server_reply(packet) {
+  // Receive response to CONNECT
+  use response_packet <- result.try(
+    mug.receive(socket, timeout_milliseconds: 1000)
+    |> result.map_error(fn(err) {
+      close_connection(socket)
+      "Failed to receive CONNECT response: " <> string.inspect(err)
+    }),
+  )
+
+  case server_reply(response_packet) {
     Ok(reply) -> io.println("Reply: " <> reply)
     Error(_) -> io.println("Error parsing reply")
   }
 
+  Ok(#(socket, info))
+}
+
+pub fn run_nats_client(socket: mug.Socket) -> Result(Nil, mug.Error) {
   use _ <- result.try(mug.send(socket, bit_array.from_string("SUB > 1\r\n")))
   io.println("Sent: SUB >")
 
@@ -149,17 +195,10 @@ pub fn main() {
     <> string.inspect(server_port),
   )
 
-  let socket = case
-    mug.new(server_host, port: server_port)
-    |> mug.timeout(milliseconds: 500)
-    |> mug.connect()
-  {
-    Ok(socket) -> {
-      io.println("Connected!")
-      socket
-    }
+  // Connect to server and get initial INFO
+  case nats_server_connect(server_host, server_port) {
     Error(err) -> {
-      io.println("NATS Connection failed: " <> string.inspect(err))
+      io.println("NATS Connection failed: " <> err)
       io.println(
         "Make sure NATS server is running on "
         <> server_host
@@ -168,19 +207,20 @@ pub fn main() {
       )
       panic as "Cannot continue without NATS connection"
     }
-  }
+    Ok(#(socket, _server_info)) -> {
+      io.println(string.inspect(socket))
 
-  io.println(string.inspect(socket))
-
-  // Run the NATS client with error handling
-  case run_nats_client(socket) {
-    Ok(_) -> {
-      io.println("NATS client operations completed successfully")
-      close_connection(socket)
-    }
-    Error(err) -> {
-      io.println("Error during NATS operations: " <> string.inspect(err))
-      close_connection(socket)
+      // Run the NATS client with error handling
+      case run_nats_client(socket) {
+        Ok(_) -> {
+          io.println("NATS client operations completed successfully")
+          close_connection(socket)
+        }
+        Error(err) -> {
+          io.println("Error during NATS operations: " <> string.inspect(err))
+          close_connection(socket)
+        }
+      }
     }
   }
 }
