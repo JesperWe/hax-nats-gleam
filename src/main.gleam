@@ -11,12 +11,6 @@ import json_types/serverinfo.{
 }
 import mug
 
-pub fn parse_server_info_json(
-  json_string: String,
-) -> Result(ServerInfo, json.DecodeError) {
-  json.parse(from: json_string, using: server_info_decoder())
-}
-
 pub fn server_reply(packet: BitArray) -> Result(String, Nil) {
   bit_array.to_string(packet)
 }
