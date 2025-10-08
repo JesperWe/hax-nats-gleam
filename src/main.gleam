@@ -160,8 +160,6 @@ pub fn run_nats_client(socket: mug.Socket) -> Result(Nil, mug.Error) {
 }
 
 pub fn main() {
-  io.println("Nats Connect")
-
   let server_host = case envoy.get("NATS_HOST") {
     Ok(host) -> host
     Error(_) -> "localhost"
