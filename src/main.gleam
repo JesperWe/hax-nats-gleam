@@ -183,8 +183,9 @@ pub fn main() {
   )
 
   // Connect to server and get initial INFO
-  case nats_server_connect(server_host, server_port) {
-    Error(err) -> {
+  use #(socket, _server_info) <- result.try(
+    nats_server_connect(server_host, server_port)
+    |> result.map_error(fn(err) {
       io.println("NATS Connection failed: " <> err)
       io.println(
         "Make sure NATS server is running on "
@@ -193,21 +194,22 @@ pub fn main() {
         <> string.inspect(server_port),
       )
       panic as "Cannot continue without NATS connection"
-    }
-    Ok(#(socket, _server_info)) -> {
-      io.println(string.inspect(socket))
+    }),
+  )
 
-      // Run the NATS client with error handling
-      case run_nats_client(socket) {
-        Ok(_) -> {
-          io.println("NATS client operations completed successfully")
-          close_connection(socket)
-        }
-        Error(err) -> {
-          io.println("Error during NATS operations: " <> string.inspect(err))
-          close_connection(socket)
-        }
-      }
+  io.println(string.inspect(socket))
+
+  // Run the NATS client with error handling
+  case run_nats_client(socket) {
+    Ok(_) -> {
+      io.println("NATS client operations completed successfully")
+      close_connection(socket)
+      Ok(Nil)
+    }
+    Error(err) -> {
+      io.println("Error during NATS operations: " <> string.inspect(err))
+      close_connection(socket)
+      Ok(Nil)
     }
   }
 }
