@@ -141,16 +141,42 @@ pub fn nats_server_connect(
   Ok(#(socket, info))
 }
 
-pub fn run_nats_client(socket: mug.Socket) -> Result(Nil, mug.Error) {
-  use _ <- result.try(mug.send(socket, bit_array.from_string("SUB > 1\r\n")))
-  io.println("Sent: SUB >")
+pub fn nats_subscribe(
+  socket: mug.Socket,
+  subject: String,
+  sid: Int,
+) -> Result(Nil, String) {
+  let sub_command = "SUB " <> subject <> " " <> string.inspect(sid) <> "\r\n"
 
-  use packet <- result.try(mug.receive(socket, timeout_milliseconds: 1000))
+  use _ <- result.try(
+    mug.send(socket, bit_array.from_string(sub_command))
+    |> result.map_error(fn(err) {
+      "Failed to send SUB command: " <> string.inspect(err)
+    }),
+  )
+
+  io.println("Sent: SUB " <> subject <> " " <> string.inspect(sid))
+
+  use packet <- result.try(
+    mug.receive(socket, timeout_milliseconds: 1000)
+    |> result.map_error(fn(err) {
+      "Failed to receive SUB response: " <> string.inspect(err)
+    }),
+  )
+
   case server_reply(packet) {
-    Ok(reply) -> io.println("Reply: " <> reply)
-    Error(_) -> io.println("Error parsing reply")
+    Ok(reply) -> {
+      io.println("Reply: " <> reply)
+      Ok(Nil)
+    }
+    Error(_) -> {
+      io.println("Error parsing reply")
+      Ok(Nil)
+    }
   }
+}
 
+pub fn run_nats_client(socket: mug.Socket) -> Result(Nil, mug.Error) {
   io.println("Waiting for messages... (Press Ctrl+C to stop)")
   receive_messages_loop(socket)
 

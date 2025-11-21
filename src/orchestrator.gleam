@@ -23,13 +23,6 @@ pub fn main() {
     Error(_) -> 4222
   }
 
-  io.println(
-    "Connecting to NATS server at "
-    <> server_host
-    <> ":"
-    <> string.inspect(server_port),
-  )
-
   // Connect to server and get initial INFO
   use #(socket, _server_info) <- result.try(
     nats_server_connect(server_host, server_port)
@@ -44,6 +37,15 @@ pub fn main() {
       panic as "Cannot continue without NATS connection"
     }),
   )
+
+  case nats_subscribe(socket, "hello", 1) {
+    Ok(_) -> io.println("Successfully subscribed")
+    Error(err) -> {
+      io.println("Failed to subscribe: " <> err)
+      close_connection(socket)
+      panic as "Cannot continue without subscription"
+    }
+  }
 
   case run_nats_client(socket) {
     Ok(_) -> {
