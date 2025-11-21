@@ -29,6 +29,25 @@ pub fn close_connection(socket: mug.Socket) -> Nil {
   }
 }
 
+// Send a NATS command with operation and payload
+pub fn nats_send(
+  socket: mug.Socket,
+  operation: String,
+  payload: String,
+) -> Result(Nil, String) {
+  let command = operation <> " " <> payload <> "\r\n"
+
+  use _ <- result.try(
+    mug.send(socket, bit_array.from_string(command))
+    |> result.map_error(fn(err) {
+      "Failed to send " <> operation <> ": " <> string.inspect(err)
+    }),
+  )
+
+  io.println("Sent: " <> operation)
+  Ok(Nil)
+}
+
 fn handle_ping(socket: mug.Socket) -> Nil {
   case mug.send(socket, bit_array.from_string("PONG\r\n")) {
     Ok(_) -> Nil
@@ -171,17 +190,13 @@ pub fn nats_server_connect(
     |> client_connect_encoder
     |> json.to_string
 
-  let connect_command = "CONNECT " <> connect_json <> "\r\n"
-
   use _ <- result.try(
-    mug.send(socket, bit_array.from_string(connect_command))
+    nats_send(socket, "CONNECT", connect_json)
     |> result.map_error(fn(err) {
       close_connection(socket)
-      "Failed to send CONNECT: " <> string.inspect(err)
+      err
     }),
   )
-
-  io.println("Sent: CONNECT")
 
   // Receive response to CONNECT
   use response_packet <- result.try(
@@ -205,16 +220,9 @@ pub fn nats_subscribe(
   subject: String,
   sid: Int,
 ) -> Result(Nil, String) {
-  let sub_command = "SUB " <> subject <> " " <> string.inspect(sid) <> "\r\n"
+  let sub_payload = subject <> " " <> string.inspect(sid)
 
-  use _ <- result.try(
-    mug.send(socket, bit_array.from_string(sub_command))
-    |> result.map_error(fn(err) {
-      "Failed to send SUB command: " <> string.inspect(err)
-    }),
-  )
-
-  io.println("Sent: SUB " <> subject <> " " <> string.inspect(sid))
+  use _ <- result.try(nats_send(socket, "SUB", sub_payload))
 
   use packet <- result.try(
     mug.receive(socket, timeout_milliseconds: 1000)

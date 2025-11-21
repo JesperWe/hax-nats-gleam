@@ -12,6 +12,7 @@ import json_types/server.{
   type Server, Server, ServerResponse, hello_message_decoder,
   server_response_encoder,
 }
+import mug
 import nats.{
   type NATSMessage, close_connection, nats_server_connect, nats_subscribe,
   run_nats_client,
@@ -21,7 +22,7 @@ const trips_count = 996
 
 // State type for the orchestrator
 pub type OrchestratorState {
-  OrchestratorState(servers: List(Server))
+  OrchestratorState(servers: List(Server), socket: mug.Socket)
 }
 
 pub type Message {
@@ -61,68 +62,96 @@ fn handle_message(
     NATS(msg) -> {
       io.println("Actor NATS message received: " <> msg)
 
-      // Try to decode the JSON message
-      case json.parse(from: msg, using: hello_message_decoder()) {
-        Ok(hello_msg) -> {
-          io.println(
-            "Decoded hello message - ID: "
-            <> hello_msg.id
-            <> ", Capacity: "
-            <> int.to_string(hello_msg.capacity),
-          )
-
-          // Check if server already exists
-          case server_exists(state.servers, hello_msg.id) {
-            True -> {
+      // Ignore NATS protocol responses like +OK or -ERR
+      case string.starts_with(msg, "+OK") || string.starts_with(msg, "-ERR") {
+        True -> {
+          io.println("NATS protocol response, ignoring")
+          actor.continue(state)
+        }
+        False -> {
+          // Try to decode the JSON message
+          case json.parse(from: msg, using: hello_message_decoder()) {
+            Ok(hello_msg) -> {
               io.println(
-                "Server " <> hello_msg.id <> " already exists, skipping",
+                "Decoded hello message - ID: "
+                <> hello_msg.id
+                <> ", Capacity: "
+                <> int.to_string(hello_msg.capacity),
+              )
+
+              // Check if server already exists
+              case server_exists(state.servers, hello_msg.id) {
+                True -> {
+                  io.println(
+                    "Server " <> hello_msg.id <> " already exists, skipping",
+                  )
+                  actor.continue(state)
+                }
+                False -> {
+                  // Allocate trip IDs for the new server
+                  let allocated_ids =
+                    allocate_trip_ids(state.servers, hello_msg.capacity)
+
+                  // Create new server with allocated trip IDs
+                  let new_server =
+                    Server(
+                      id: hello_msg.id,
+                      capacity: hello_msg.capacity,
+                      trip_ids: allocated_ids,
+                    )
+
+                  // Add to state
+                  let new_servers = list.append(state.servers, [new_server])
+                  let new_state =
+                    OrchestratorState(
+                      servers: new_servers,
+                      socket: state.socket,
+                    )
+
+                  io.println(
+                    "Added server "
+                    <> hello_msg.id
+                    <> " with "
+                    <> int.to_string(list.length(allocated_ids))
+                    <> " trip IDs allocated",
+                  )
+                  io.println(
+                    "Total servers: " <> int.to_string(list.length(new_servers)),
+                  )
+
+                  // Create and send response with allocated trip IDs
+                  let response =
+                    ServerResponse(id: hello_msg.id, trip_ids: allocated_ids)
+                  let response_json =
+                    json.to_string(server_response_encoder(response))
+
+                  // Send response back via NATS using PUB operation
+                  // Format: PUB <subject> <size>\r\n<payload>
+                  let subject = "hello.response"
+                  let payload_size = string.byte_size(response_json)
+                  let pub_command =
+                    subject
+                    <> " "
+                    <> int.to_string(payload_size)
+                    <> "\r\n"
+                    <> response_json
+
+                  case nats.nats_send(state.socket, "PUB", pub_command) {
+                    Ok(_) -> io.println("Response sent: " <> response_json)
+                    Error(err) -> io.println("Failed to send response: " <> err)
+                  }
+
+                  actor.continue(new_state)
+                }
+              }
+            }
+            Error(err) -> {
+              io.println(
+                "Failed to decode hello message: " <> string.inspect(err),
               )
               actor.continue(state)
             }
-            False -> {
-              // Allocate trip IDs for the new server
-              let allocated_ids =
-                allocate_trip_ids(state.servers, hello_msg.capacity)
-
-              // Create new server with allocated trip IDs
-              let new_server =
-                Server(
-                  id: hello_msg.id,
-                  capacity: hello_msg.capacity,
-                  trip_ids: allocated_ids,
-                )
-
-              // Add to state
-              let new_servers = list.append(state.servers, [new_server])
-              let new_state = OrchestratorState(servers: new_servers)
-
-              io.println(
-                "Added server "
-                <> hello_msg.id
-                <> " with "
-                <> int.to_string(list.length(allocated_ids))
-                <> " trip IDs allocated",
-              )
-              io.println(
-                "Total servers: " <> int.to_string(list.length(new_servers)),
-              )
-
-              // Create and send response with allocated trip IDs
-              let response =
-                ServerResponse(id: hello_msg.id, trip_ids: allocated_ids)
-              let response_json =
-                json.to_string(server_response_encoder(response))
-
-              // TODO: Send response back via NATS (need socket access here)
-              io.println("Response: " <> response_json)
-
-              actor.continue(new_state)
-            }
           }
-        }
-        Error(err) -> {
-          io.println("Failed to decode hello message: " <> string.inspect(err))
-          actor.continue(state)
         }
       }
     }
@@ -191,8 +220,8 @@ pub fn main() {
     }
   }
 
-  // Start the actor with initial empty state
-  let initial_state = OrchestratorState(servers: [])
+  // Start the actor with initial empty state and socket
+  let initial_state = OrchestratorState(servers: [], socket: socket)
   let assert Ok(actor) =
     actor.new(initial_state) |> actor.on_message(handle_message) |> actor.start
 
