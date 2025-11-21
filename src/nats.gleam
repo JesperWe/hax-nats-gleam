@@ -1,4 +1,5 @@
 import gleam/bit_array
+import gleam/erlang/process.{type Subject}
 import gleam/io
 import gleam/json
 import gleam/result
@@ -8,6 +9,11 @@ import json_types/serverinfo.{
   type ServerInfo, server_info_decoder, server_info_encoder,
 }
 import mug
+
+// Message type for NATS messages sent to the actor
+pub type NATSMessage {
+  NATSMessage(payload: String)
+}
 
 pub fn server_reply(packet: BitArray) -> Result(String, Nil) {
   bit_array.to_string(packet)
@@ -31,26 +37,49 @@ fn handle_ping(socket: mug.Socket) -> Nil {
   }
 }
 
-fn process_packet(socket: mug.Socket, packet: BitArray) -> Nil {
+fn process_packet(
+  socket: mug.Socket,
+  packet: BitArray,
+  actor: Subject(NATSMessage),
+) -> Result(String, Nil) {
   case server_reply(packet) {
     Ok(reply) -> {
       case string.trim(reply) {
-        "PING" -> handle_ping(socket)
-        _ -> io.println("Message: " <> reply)
+        "PING" -> {
+          handle_ping(socket)
+          Ok("PING")
+        }
+        _ -> {
+          // Send the message to the actor
+          process.send(actor, NATSMessage(reply))
+          Ok(reply)
+        }
       }
     }
-    Error(_) -> io.println("Error parsing message")
+    Error(_) -> {
+      io.println("Error parsing message")
+      Error(Nil)
+    }
   }
 }
 
-pub fn receive_messages_loop(socket: mug.Socket) -> Nil {
+pub fn receive_messages_loop(
+  socket: mug.Socket,
+  actor: Subject(NATSMessage),
+) -> Nil {
   case mug.receive(socket, timeout_milliseconds: 1000) {
-    Ok(packet) -> process_packet(socket, packet)
+    Ok(packet) -> {
+      case process_packet(socket, packet, actor) {
+        Ok(reply) -> io.println(reply)
+        Error(_) -> Nil
+      }
+      Nil
+    }
     Error(mug.Timeout) -> Nil
     // Timeout is normal, just continue
     Error(err) -> io.println("Error receiving message: " <> string.inspect(err))
   }
-  receive_messages_loop(socket)
+  receive_messages_loop(socket, actor)
 }
 
 pub fn nats_server_connect(
@@ -176,9 +205,12 @@ pub fn nats_subscribe(
   }
 }
 
-pub fn run_nats_client(socket: mug.Socket) -> Result(Nil, mug.Error) {
+pub fn run_nats_client(
+  socket: mug.Socket,
+  actor: Subject(NATSMessage),
+) -> Result(Nil, mug.Error) {
   io.println("Waiting for messages... (Press Ctrl+C to stop)")
-  receive_messages_loop(socket)
+  receive_messages_loop(socket, actor)
 
   Ok(Nil)
 }
