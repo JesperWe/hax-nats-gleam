@@ -1,9 +1,16 @@
 import gleam/dynamic/decode
 import gleam/json
+import gleam/option.{type Option}
+import gleam/time/timestamp.{type Timestamp}
 
-// Server type with id, capacity, and assigned trip_ids
+// Server type with id, capacity, assigned trip_ids, and last heartbeat
 pub type Server {
-  Server(id: String, capacity: Int, trip_ids: List(Int))
+  Server(
+    id: String,
+    capacity: Int,
+    trip_ids: List(Int),
+    heartbeat: Option(Timestamp),
+  )
 }
 
 // HelloMessage type for incoming messages

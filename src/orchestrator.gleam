@@ -4,10 +4,14 @@ import gleam/int
 import gleam/io
 import gleam/json
 import gleam/list
+import gleam/option
+import gleam/order
 import gleam/otp/actor
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
+import gleam/time/duration
+import gleam/time/timestamp
 import json_types/server.{
   type Server, Server, ServerResponse, hello_message_decoder,
   server_response_encoder,
@@ -28,6 +32,8 @@ pub type OrchestratorState {
 pub type Message {
   Shutdown
   NATS(msg: String)
+  CheckHeartbeats
+  RemoveStaleServers(stale_ids: List(String))
 }
 
 // Get all currently allocated trip IDs from all servers
@@ -52,6 +58,47 @@ fn allocate_trip_ids(servers: List(Server), capacity: Int) -> List(Int) {
 // Find if a server with the given ID already exists
 fn server_exists(servers: List(Server), id: String) -> Bool {
   list.any(servers, fn(s) { s.id == id })
+}
+
+// Update the heartbeat timestamp for a server
+fn update_server_heartbeat(
+  servers: List(Server),
+  server_id: String,
+) -> List(Server) {
+  let current_time = timestamp.system_time()
+  list.map(servers, fn(server) {
+    case server.id == server_id {
+      True -> Server(..server, heartbeat: option.Some(current_time))
+      False -> server
+    }
+  })
+}
+
+// Find servers with stale heartbeats (older than 2 seconds)
+fn find_stale_servers(servers: List(Server)) -> List(String) {
+  let current_time = timestamp.system_time()
+  let two_seconds = duration.seconds(2)
+
+  servers
+  |> list.filter(fn(server) {
+    case server.heartbeat {
+      option.None -> True
+      // No heartbeat yet, consider stale
+      option.Some(last_heartbeat) -> {
+        let time_since = timestamp.difference(last_heartbeat, current_time)
+        duration.compare(time_since, two_seconds) == order.Gt
+      }
+    }
+  })
+  |> list.map(fn(server) { server.id })
+}
+
+// Remove servers by their IDs
+fn remove_servers(
+  servers: List(Server),
+  ids_to_remove: List(String),
+) -> List(Server) {
+  list.filter(servers, fn(server) { !list.contains(ids_to_remove, server.id) })
 }
 
 fn handle_message(
@@ -98,6 +145,7 @@ fn handle_message(
                       id: hello_msg.id,
                       capacity: hello_msg.capacity,
                       trip_ids: allocated_ids,
+                      heartbeat: option.Some(timestamp.system_time()),
                     )
 
                   // Add to state
@@ -145,18 +193,75 @@ fn handle_message(
                 }
               }
             }
-            Error(err) -> {
-              io.println(
-                "Failed to decode hello message: " <> string.inspect(err),
-              )
-              actor.continue(state)
+            Error(_) -> {
+              // Not a hello message, check if it's a heartbeat
+              // Heartbeat messages are simple: just the server ID as plain text
+              let server_id = string.trim(msg)
+
+              // Check if this is a heartbeat from a known server
+              case server_exists(state.servers, server_id) {
+                True -> {
+                  io.println("Heartbeat received from server: " <> server_id)
+                  let updated_servers =
+                    update_server_heartbeat(state.servers, server_id)
+                  let new_state =
+                    OrchestratorState(
+                      servers: updated_servers,
+                      socket: state.socket,
+                    )
+                  actor.continue(new_state)
+                }
+                False -> {
+                  io.println("Unknown message or server: " <> msg)
+                  actor.continue(state)
+                }
+              }
             }
           }
         }
       }
     }
+    CheckHeartbeats -> {
+      // Find servers with stale heartbeats
+      let stale_ids = find_stale_servers(state.servers)
+      case list.length(stale_ids) {
+        0 -> actor.continue(state)
+        _ -> {
+          io.println("Removing stale servers: " <> string.join(stale_ids, ", "))
+          let updated_servers = remove_servers(state.servers, stale_ids)
+          let new_state =
+            OrchestratorState(servers: updated_servers, socket: state.socket)
+          io.println(
+            "Remaining servers: " <> int.to_string(list.length(updated_servers)),
+          )
+          actor.continue(new_state)
+        }
+      }
+    }
+    RemoveStaleServers(stale_ids) -> {
+      io.println("Removing stale servers: " <> string.join(stale_ids, ", "))
+      let updated_servers = remove_servers(state.servers, stale_ids)
+      let new_state =
+        OrchestratorState(servers: updated_servers, socket: state.socket)
+      io.println(
+        "Remaining servers: " <> int.to_string(list.length(updated_servers)),
+      )
+      actor.continue(new_state)
+    }
     Shutdown -> actor.stop()
   }
+}
+
+// Monitor function that checks heartbeats every second
+fn heartbeat_monitor(actor_subject: Subject(Message)) -> Nil {
+  // Sleep for 1 second
+  process.sleep(1000)
+
+  // Send CheckHeartbeats message to the main actor
+  process.send(actor_subject, CheckHeartbeats)
+
+  // Continue monitoring
+  heartbeat_monitor(actor_subject)
 }
 
 // Bridge function to forward NATS messages to the actor
@@ -212,9 +317,19 @@ pub fn main() {
   )
 
   case nats_subscribe(socket, "hello", 1) {
-    Ok(_) -> io.println("Successfully subscribed")
+    Ok(_) -> io.println("Successfully subscribed to hello")
     Error(err) -> {
-      io.println("Failed to subscribe: " <> err)
+      io.println("Failed to subscribe to hello: " <> err)
+      close_connection(socket)
+      panic as "Cannot continue without subscription"
+    }
+  }
+
+  // Subscribe to heartbeat messages
+  case nats_subscribe(socket, "heartbeat", 2) {
+    Ok(_) -> io.println("Successfully subscribed to heartbeat")
+    Error(err) -> {
+      io.println("Failed to subscribe to heartbeat: " <> err)
       close_connection(socket)
       panic as "Cannot continue without subscription"
     }
@@ -242,6 +357,14 @@ pub fn main() {
 
   // Wait for the bridge to send us its subject
   let nats_subject = process.receive_forever(bridge_subject_channel)
+
+  // Start the heartbeat monitor
+  io.println("Starting heartbeat monitor...")
+  let _monitor =
+    process.spawn(fn() {
+      io.println("Heartbeat monitor started")
+      heartbeat_monitor(actor.data)
+    })
 
   case run_nats_client(socket, nats_subject) {
     Ok(_) -> {
