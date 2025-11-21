@@ -2,27 +2,129 @@ import envoy
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/io
+import gleam/json
+import gleam/list
 import gleam/otp/actor
 import gleam/result
+import gleam/set.{type Set}
 import gleam/string
+import json_types/server.{
+  type Server, Server, ServerResponse, hello_message_decoder,
+  server_response_encoder,
+}
 import nats.{
   type NATSMessage, close_connection, nats_server_connect, nats_subscribe,
   run_nats_client,
 }
 
-pub type Message(element) {
+const trips_count = 996
+
+// State type for the orchestrator
+pub type OrchestratorState {
+  OrchestratorState(servers: List(Server))
+}
+
+pub type Message {
   Shutdown
   NATS(msg: String)
 }
 
+// Get all currently allocated trip IDs from all servers
+fn get_allocated_trip_ids(servers: List(Server)) -> Set(Int) {
+  servers
+  |> list.flat_map(fn(s) { s.trip_ids })
+  |> set.from_list
+}
+
+// Allocate trip IDs for a new server
+fn allocate_trip_ids(servers: List(Server), capacity: Int) -> List(Int) {
+  let allocated = get_allocated_trip_ids(servers)
+
+  // Find free trip IDs from 0 to trips_count - 1
+  let all_ids = list.range(0, trips_count - 1)
+  let free_ids = list.filter(all_ids, fn(id) { !set.contains(allocated, id) })
+
+  // Take up to 'capacity' free IDs
+  list.take(free_ids, capacity)
+}
+
+// Find if a server with the given ID already exists
+fn server_exists(servers: List(Server), id: String) -> Bool {
+  list.any(servers, fn(s) { s.id == id })
+}
+
 fn handle_message(
-  stack: List(e),
-  message: Message(e),
-) -> actor.Next(List(e), Message(e)) {
+  state: OrchestratorState,
+  message: Message,
+) -> actor.Next(OrchestratorState, Message) {
   case message {
     NATS(msg) -> {
-      io.println("NATS message received: " <> msg)
-      actor.continue(stack)
+      io.println("Actor NATS message received: " <> msg)
+
+      // Try to decode the JSON message
+      case json.parse(from: msg, using: hello_message_decoder()) {
+        Ok(hello_msg) -> {
+          io.println(
+            "Decoded hello message - ID: "
+            <> hello_msg.id
+            <> ", Capacity: "
+            <> int.to_string(hello_msg.capacity),
+          )
+
+          // Check if server already exists
+          case server_exists(state.servers, hello_msg.id) {
+            True -> {
+              io.println(
+                "Server " <> hello_msg.id <> " already exists, skipping",
+              )
+              actor.continue(state)
+            }
+            False -> {
+              // Allocate trip IDs for the new server
+              let allocated_ids =
+                allocate_trip_ids(state.servers, hello_msg.capacity)
+
+              // Create new server with allocated trip IDs
+              let new_server =
+                Server(
+                  id: hello_msg.id,
+                  capacity: hello_msg.capacity,
+                  trip_ids: allocated_ids,
+                )
+
+              // Add to state
+              let new_servers = list.append(state.servers, [new_server])
+              let new_state = OrchestratorState(servers: new_servers)
+
+              io.println(
+                "Added server "
+                <> hello_msg.id
+                <> " with "
+                <> int.to_string(list.length(allocated_ids))
+                <> " trip IDs allocated",
+              )
+              io.println(
+                "Total servers: " <> int.to_string(list.length(new_servers)),
+              )
+
+              // Create and send response with allocated trip IDs
+              let response =
+                ServerResponse(id: hello_msg.id, trip_ids: allocated_ids)
+              let response_json =
+                json.to_string(server_response_encoder(response))
+
+              // TODO: Send response back via NATS (need socket access here)
+              io.println("Response: " <> response_json)
+
+              actor.continue(new_state)
+            }
+          }
+        }
+        Error(err) -> {
+          io.println("Failed to decode hello message: " <> string.inspect(err))
+          actor.continue(state)
+        }
+      }
     }
     Shutdown -> actor.stop()
   }
@@ -31,15 +133,19 @@ fn handle_message(
 // Bridge function to forward NATS messages to the actor
 fn bridge_loop(
   nats_subject: Subject(NATSMessage),
-  actor_subject: Subject(Message(a)),
+  actor_subject: Subject(Message),
 ) -> Nil {
   // Receive a NATS message (blocks until one arrives)
+  io.println("Bridge: Waiting for NATS message...")
   let nats_msg = process.receive_forever(nats_subject)
+  io.println("Bridge: Received NATS message!")
   // Extract the payload from NATSMessage and wrap it in our Message type
   case nats_msg {
     nats.NATSMessage(payload) -> {
+      io.println("Bridge: Forwarding to actor: " <> payload)
       // Send the NATS payload to the actor wrapped in our NATS message type
       process.send(actor_subject, NATS(payload))
+      io.println("Bridge: Message forwarded to actor")
     }
   }
   // Continue looping
@@ -85,15 +191,28 @@ pub fn main() {
     }
   }
 
-  // Create a subject for NATS messages
-  let nats_subject: Subject(NATSMessage) = process.new_subject()
-
-  // Start the actor
+  // Start the actor with initial empty state
+  let initial_state = OrchestratorState(servers: [])
   let assert Ok(actor) =
-    actor.new([]) |> actor.on_message(handle_message) |> actor.start
+    actor.new(initial_state) |> actor.on_message(handle_message) |> actor.start
+
+  // Create a channel for the bridge process to send us its subject
+  let bridge_subject_channel = process.new_subject()
 
   // Spawn a bridge process to forward NATS messages to the actor
-  let _bridge = process.spawn(fn() { bridge_loop(nats_subject, actor.data) })
+  io.println("Starting bridge process...")
+  let _bridge =
+    process.spawn(fn() {
+      io.println("Bridge process started")
+      // Create the NATS subject in this process so we can receive on it
+      let nats_subject: Subject(NATSMessage) = process.new_subject()
+      // Send the subject back to the main process
+      process.send(bridge_subject_channel, nats_subject)
+      bridge_loop(nats_subject, actor.data)
+    })
+
+  // Wait for the bridge to send us its subject
+  let nats_subject = process.receive_forever(bridge_subject_channel)
 
   case run_nats_client(socket, nats_subject) {
     Ok(_) -> {

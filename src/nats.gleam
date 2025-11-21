@@ -30,10 +30,26 @@ pub fn close_connection(socket: mug.Socket) -> Nil {
 }
 
 fn handle_ping(socket: mug.Socket) -> Nil {
-  io.println("Received: PING")
   case mug.send(socket, bit_array.from_string("PONG\r\n")) {
-    Ok(_) -> io.println("Sent: PONG")
+    Ok(_) -> Nil
     Error(err) -> io.println("Error sending PONG: " <> string.inspect(err))
+  }
+}
+
+// Parse NATS MSG protocol: MSG <subject> <sid> <size>\r\n<payload>\r\n
+fn parse_msg_payload(msg: String) -> Result(String, Nil) {
+  case string.starts_with(msg, "MSG ") {
+    True -> {
+      // Split by newline to separate header from payload
+      case string.split(msg, "\n") {
+        [_header, payload, ..] -> {
+          // Return the payload, trimming any trailing whitespace
+          Ok(string.trim(payload))
+        }
+        _ -> Error(Nil)
+      }
+    }
+    False -> Error(Nil)
   }
 }
 
@@ -47,12 +63,26 @@ fn process_packet(
       case string.trim(reply) {
         "PING" -> {
           handle_ping(socket)
-          Ok("PING")
+          Ok("PING > PONG")
         }
         _ -> {
-          // Send the message to the actor
-          process.send(actor, NATSMessage(reply))
-          Ok(reply)
+          // Check if this is a MSG protocol message
+          case parse_msg_payload(reply) {
+            Ok(payload) -> {
+              // Send only the payload to the actor
+              io.println("Received MSG with payload: " <> payload)
+              process.send(actor, NATSMessage(payload))
+              io.println("Message sent to actor subject")
+              Ok(reply)
+            }
+            Error(_) -> {
+              // Not a MSG, send the whole reply
+              io.println("Send to actor: " <> reply)
+              process.send(actor, NATSMessage(reply))
+              io.println("Message sent to actor subject")
+              Ok(reply)
+            }
+          }
         }
       }
     }
