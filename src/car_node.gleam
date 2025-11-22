@@ -138,20 +138,13 @@ pub fn main() {
 
   io.println("Got " <> int.to_string(list.length(car_ids)) <> " car ids")
 
-  // TODO: this fails with EALREADY
-  // case nats_unsubscribe(socket, "hello.response", 1) {
-  //   Ok(_) -> io.println("Unsubscribed from hello.response")
-  //   Error(err) -> {
-  //     close_connection(socket)
-  //     panic as {
-  //       "Error unsubscribing from hello.response: " <> string.inspect(err)
-  //     }
-  //   }
-  // }
-
-  // TODO: this hangs
-  //process.kill(nats_client_loop)
-  // io.println("Killed nats client loop")
+  spawn(fn() {
+    // Eat unused messages
+    loop(0, fn() {
+      process.receive_forever(nats_subject)
+      Nil
+    })
+  })
 
   use conn <- sqlight.with_connection(db_file)
 
