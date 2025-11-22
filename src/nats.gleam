@@ -46,7 +46,6 @@ pub fn nats_send(
     }),
   )
 
-  io.println("Sent: " <> operation)
   Ok(Nil)
 }
 
@@ -95,16 +94,12 @@ fn process_packet(
           case parse_msg_payload(reply) {
             Ok(payload) -> {
               // Send only the payload to the actor
-              io.println("Received MSG with payload: " <> payload)
               process.send(actor, NATSMessage(payload))
-              io.println("Message sent to actor subject")
               Ok(reply)
             }
             Error(_) -> {
               // Not a MSG, send the whole reply
-              io.println("Send to actor: " <> reply)
               process.send(actor, NATSMessage(reply))
-              io.println("Message sent to actor subject")
               Ok(reply)
             }
           }
@@ -125,14 +120,14 @@ pub fn receive_messages_loop(
   case mug.receive(socket, timeout_milliseconds: 1000) {
     Ok(packet) -> {
       case process_packet(socket, packet, actor) {
-        Ok(reply) -> io.println(reply)
+        Ok(_) -> Nil
         Error(_) -> Nil
       }
       Nil
     }
     Error(mug.Timeout) -> Nil
     // Timeout is normal, just continue
-    Error(err) -> io.println("Error receiving message: " <> string.inspect(err))
+    Error(err) -> Nil //io.println("Error receiving message: " <> string.inspect(err))
   }
   receive_messages_loop(socket, actor)
 }

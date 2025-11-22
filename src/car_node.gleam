@@ -226,7 +226,7 @@ pub fn main() {
                 |> nats.to_nats_payload,
               )
             {
-              Ok(_) -> io.println("Positions sent")
+              Ok(_) -> Nil
               Error(err) -> io.println("Error sending positions: " <> err)
             }
           }
