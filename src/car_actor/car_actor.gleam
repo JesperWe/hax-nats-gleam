@@ -22,7 +22,7 @@ pub fn create(
   id: Int,
   db_conn: sqlight.Connection,
 ) -> Result(process.Subject(Message(a)), String) {
-  use trips <- result.try(
+  use raw_trips <- result.try(
     db.get_trips_by_id(db_conn, id)
     |> result.map(fn(trips) {
       list.sort(trips, by: fn(a, b) { float.compare(a.timestamp, b.timestamp) })
@@ -33,11 +33,22 @@ pub fn create(
   )
 
   use first_trip <- result.try(
-    list.first(trips)
+    list.first(raw_trips)
     |> result.map_error(fn(_) {
       "Car ID " <> string.inspect(id) <> " got empty list of trips"
     }),
   )
+
+  let trips =
+    list.map(raw_trips, fn(trip) {
+      db.TripsEntry(
+        trip.id,
+        trip.vendor,
+        trip.lat,
+        trip.lng,
+        trip.timestamp -. first_trip.timestamp,
+      )
+    })
 
   let vendor = first_trip.vendor
 

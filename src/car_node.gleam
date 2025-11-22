@@ -24,7 +24,7 @@ const capacity_per_core = 5
 
 const car_actor_timeout = 10
 
-const tick_interval = 50
+const tick_interval = 100
 
 const heartbeat_interval = 1000
 
@@ -95,18 +95,6 @@ pub fn main() {
     })
   })
 
-  case
-    nats.nats_send(
-      socket,
-      "PUB",
-      "hello "
-        <> nats.to_nats_payload("{\"node_id\": \"123abc\", \"capacity\": 10}"),
-    )
-  {
-    Ok(_) -> io.println(">>>>> First Hello sent")
-    Error(err) -> io.println("Error sending heartbeat: " <> err)
-  }
-
   let _nats_client_loop = spawn(fn() { run_nats_client(socket, nats_subject) })
 
   io.println("Subscribed to hello.response")
@@ -173,14 +161,18 @@ pub fn main() {
 
   io.println("Got " <> int.to_string(list.length(car_ids)) <> " car ids")
 
-  use actors <- result.try(
+  let assert Ok(actors) =
     list.map(car_ids, fn(id) { car_actor.create(id, conn) })
+    |> list.filter(fn(result) {
+      case result {
+        Ok(_) -> True
+        Error(err) -> {
+          io.println("Error creating actor for car " <> string.inspect(err))
+          False
+        }
+      }
+    })
     |> result.all
-    |> result.map_error(fn(err) {
-      close_connection(socket)
-      panic as { "Error creating actors: " <> string.inspect(err) }
-    }),
-  )
 
   let t0 = timestamp.system_time()
 
@@ -188,7 +180,7 @@ pub fn main() {
     let seconds =
       timestamp.difference(t0, timestamp.system_time()) |> duration.to_seconds()
 
-    let milliseconds = seconds *. 1000.0
+    let milliseconds = seconds *. 1000.0 /. 60.0 /. 2.5
 
     case
       float.modulo(
@@ -273,6 +265,7 @@ fn get_car_ids_sync(
 
   case json.parse(from: msg.payload, using: server.server_response_decoder()) {
     Ok(response) if response.id == node_id -> {
+      io.println("Got car ids: " <> string.inspect(response.trip_ids))
       Ok(response.trip_ids)
     }
     _ -> {
