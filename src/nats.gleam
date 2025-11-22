@@ -1,5 +1,6 @@
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/io
 import gleam/json
 import gleam/result
@@ -30,6 +31,7 @@ pub fn close_connection(socket: mug.Socket) -> Nil {
 }
 
 // Send a NATS command with operation and payload
+// Format: <operation> <size>\r\n<payload>\r\n
 pub fn nats_send(
   socket: mug.Socket,
   operation: String,
@@ -44,8 +46,11 @@ pub fn nats_send(
     }),
   )
 
-  io.println("Sent: " <> operation)
   Ok(Nil)
+}
+
+pub fn to_nats_payload(payload: String) -> String {
+  int.to_string(string.byte_size(payload)) <> "\r\n" <> payload
 }
 
 fn handle_ping(socket: mug.Socket) -> Nil {
@@ -89,16 +94,12 @@ fn process_packet(
           case parse_msg_payload(reply) {
             Ok(payload) -> {
               // Send only the payload to the actor
-              io.println("Received MSG with payload: " <> payload)
               process.send(actor, NATSMessage(payload))
-              io.println("Message sent to actor subject")
               Ok(reply)
             }
             Error(_) -> {
               // Not a MSG, send the whole reply
-              io.println("Send to actor: " <> reply)
               process.send(actor, NATSMessage(reply))
-              io.println("Message sent to actor subject")
               Ok(reply)
             }
           }
@@ -119,14 +120,14 @@ pub fn receive_messages_loop(
   case mug.receive(socket, timeout_milliseconds: 1000) {
     Ok(packet) -> {
       case process_packet(socket, packet, actor) {
-        Ok(reply) -> io.println(reply)
+        Ok(_) -> Nil
         Error(_) -> Nil
       }
       Nil
     }
     Error(mug.Timeout) -> Nil
     // Timeout is normal, just continue
-    Error(err) -> io.println("Error receiving message: " <> string.inspect(err))
+    Error(err) -> Nil //io.println("Error receiving message: " <> string.inspect(err))
   }
   receive_messages_loop(socket, actor)
 }
@@ -228,6 +229,34 @@ pub fn nats_subscribe(
     mug.receive(socket, timeout_milliseconds: 1000)
     |> result.map_error(fn(err) {
       "Failed to receive SUB response: " <> string.inspect(err)
+    }),
+  )
+
+  case server_reply(packet) {
+    Ok(reply) -> {
+      io.println("Reply: " <> reply)
+      Ok(Nil)
+    }
+    Error(_) -> {
+      io.println("Error parsing reply")
+      Ok(Nil)
+    }
+  }
+}
+
+pub fn nats_unsubscribe(
+  socket: mug.Socket,
+  subject: String,
+  sid: Int,
+) -> Result(Nil, String) {
+  let sub_payload = subject <> " " <> string.inspect(sid)
+
+  use _ <- result.try(nats_send(socket, "UNSUB", sub_payload))
+
+  use packet <- result.try(
+    mug.receive(socket, timeout_milliseconds: 1000)
+    |> result.map_error(fn(err) {
+      "Failed to receive UNSUB response: " <> string.inspect(err)
     }),
   )
 

@@ -22,7 +22,7 @@ pub fn create(
   id: Int,
   db_conn: sqlight.Connection,
 ) -> Result(process.Subject(Message(a)), String) {
-  use trips <- result.try(
+  use raw_trips <- result.try(
     db.get_trips_by_id(db_conn, id)
     |> result.map(fn(trips) {
       list.sort(trips, by: fn(a, b) { float.compare(a.timestamp, b.timestamp) })
@@ -33,9 +33,22 @@ pub fn create(
   )
 
   use first_trip <- result.try(
-    list.first(trips)
-    |> result.map_error(fn(_) { "Expected non-empty list of trips" }),
+    list.first(raw_trips)
+    |> result.map_error(fn(_) {
+      "Car ID " <> string.inspect(id) <> " got empty list of trips"
+    }),
   )
+
+  let trips =
+    list.map(raw_trips, fn(trip) {
+      db.TripsEntry(
+        trip.id,
+        trip.vendor,
+        trip.lat,
+        trip.lng,
+        trip.timestamp -. first_trip.timestamp,
+      )
+    })
 
   let vendor = first_trip.vendor
 
@@ -63,32 +76,36 @@ fn handle_message(
     Shutdown -> actor.stop()
 
     Tick(time, reply_with) -> {
-      
       case interpolate_trip(state.trips, time) {
         Ok(#(lat, lng)) -> {
-          process.send(reply_with, Ok(Position(state.id, state.vendor, lat, lng)))
+          process.send(
+            reply_with,
+            Ok(Position(state.id, state.vendor, lat, lng)),
+          )
         }
         Error(_) -> {
           process.send(reply_with, Ok(Inactive(state.id, state.vendor)))
         }
       }
-      
+
       actor.continue(state)
+    }
   }
 }
 
-}
-fn interpolate_trip(trips: List(db.TripsEntry), time: Float) -> Result(#(Float, Float), String) {
+fn interpolate_trip(
+  trips: List(db.TripsEntry),
+  time: Float,
+) -> Result(#(Float, Float), String) {
   case find_between(trips, time) {
     Ok(#(prev, next)) -> {
-
       let t = case next.timestamp -. prev.timestamp {
         0.0 -> 0.0
-        t -> {time -. prev.timestamp} /. t
+        t -> { time -. prev.timestamp } /. t
       }
 
-      let lat = prev.lat +. t *. {next.lat -. prev.lat}
-      let lng = prev.lng +. t *. {next.lng -. prev.lng}
+      let lat = prev.lat +. t *. { next.lat -. prev.lat }
+      let lng = prev.lng +. t *. { next.lng -. prev.lng }
 
       Ok(#(lat, lng))
     }
