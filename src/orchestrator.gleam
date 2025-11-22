@@ -107,8 +107,6 @@ fn handle_message(
 ) -> actor.Next(OrchestratorState, Message) {
   case message {
     NATS(msg) -> {
-      io.println("Actor NATS message received: " <> msg)
-
       // Ignore NATS protocol responses like +OK or -ERR
       case string.starts_with(msg, "+OK") || string.starts_with(msg, "-ERR") {
         True -> {
