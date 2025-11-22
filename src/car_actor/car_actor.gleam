@@ -34,7 +34,9 @@ pub fn create(
 
   use first_trip <- result.try(
     list.first(trips)
-    |> result.map_error(fn(_) { "Expected non-empty list of trips" }),
+    |> result.map_error(fn(_) {
+      "Car ID " <> string.inspect(id) <> " got empty list of trips"
+    }),
   )
 
   let vendor = first_trip.vendor
@@ -63,32 +65,36 @@ fn handle_message(
     Shutdown -> actor.stop()
 
     Tick(time, reply_with) -> {
-      
       case interpolate_trip(state.trips, time) {
         Ok(#(lat, lng)) -> {
-          process.send(reply_with, Ok(Position(state.id, state.vendor, lat, lng)))
+          process.send(
+            reply_with,
+            Ok(Position(state.id, state.vendor, lat, lng)),
+          )
         }
         Error(_) -> {
           process.send(reply_with, Ok(Inactive(state.id, state.vendor)))
         }
       }
-      
+
       actor.continue(state)
+    }
   }
 }
 
-}
-fn interpolate_trip(trips: List(db.TripsEntry), time: Float) -> Result(#(Float, Float), String) {
+fn interpolate_trip(
+  trips: List(db.TripsEntry),
+  time: Float,
+) -> Result(#(Float, Float), String) {
   case find_between(trips, time) {
     Ok(#(prev, next)) -> {
-
       let t = case next.timestamp -. prev.timestamp {
         0.0 -> 0.0
-        t -> {time -. prev.timestamp} /. t
+        t -> { time -. prev.timestamp } /. t
       }
 
-      let lat = prev.lat +. t *. {next.lat -. prev.lat}
-      let lng = prev.lng +. t *. {next.lng -. prev.lng}
+      let lat = prev.lat +. t *. { next.lat -. prev.lat }
+      let lng = prev.lng +. t *. { next.lng -. prev.lng }
 
       Ok(#(lat, lng))
     }

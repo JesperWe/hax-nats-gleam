@@ -1,7 +1,7 @@
 import gleam/dynamic/decode
-import sqlight
 import gleam/result
 import gleam/string
+import sqlight
 
 pub type TripsEntry {
   TripsEntry(id: Int, vendor: Int, lat: Float, lng: Float, timestamp: Float)
@@ -33,8 +33,43 @@ pub fn get_trips_by_id(
       with: [sqlight.int(id)],
       expecting: trip_decoder,
     )
-    |> result.map_error(fn(err) { "Error getting trips: " <> string.inspect(err) }),
+    |> result.map_error(fn(err) {
+      "Error getting trips: " <> string.inspect(err)
+    }),
   )
 
   Ok(trips)
+}
+
+const sql_query_timestamp_interval = "
+SELECT MIN(timestamp), MAX(timestamp)
+FROM trips
+"
+
+pub fn get_timestamp_interval(
+  conn: sqlight.Connection,
+) -> Result(#(Float, Float), String) {
+  let timestamp_decoder = {
+    use start_timestamp <- decode.field(0, decode.float)
+    use end_timestamp <- decode.field(1, decode.float)
+    decode.success(#(start_timestamp, end_timestamp))
+  }
+
+  use results <- result.try(
+    sqlight.query(
+      sql_query_timestamp_interval,
+      on: conn,
+      with: [],
+      expecting: timestamp_decoder,
+    )
+    |> result.map_error(fn(err) {
+      "Error getting timestamp interval: " <> string.inspect(err)
+    }),
+  )
+
+  case results {
+    [interval] -> Ok(interval)
+    [] -> Error("No timestamp data found")
+    _ -> Error("Unexpected multiple rows returned")
+  }
 }

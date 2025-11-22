@@ -16,6 +16,19 @@ pub type ServerResponse {
   ServerResponse(id: String, trip_ids: List(Int))
 }
 
+pub type PositionsMessage {
+  PositionsMessage(id: Int, vendor: Int, lat: Float, lng: Float)
+}
+
+pub fn positions_message_encoder(msg: PositionsMessage) -> json.Json {
+  json.object([
+    #("id", json.int(msg.id)),
+    #("vendor", json.int(msg.vendor)),
+    #("lat", json.float(msg.lat)),
+    #("lng", json.float(msg.lng)),
+  ])
+}
+
 // Decoder for HelloMessage (incoming JSON)
 pub fn hello_message_decoder() -> decode.Decoder(HelloMessage) {
   use id <- decode.field("id", decode.string)
@@ -46,4 +59,10 @@ pub fn server_response_encoder(response: ServerResponse) -> json.Json {
     #("id", json.string(response.id)),
     #("trip_ids", json.array(response.trip_ids, json.int)),
   ])
+}
+
+pub fn server_response_decoder() -> decode.Decoder(ServerResponse) {
+  use id <- decode.field("id", decode.string)
+  use trip_ids <- decode.field("trip_ids", decode.list(decode.int))
+  decode.success(ServerResponse(id, trip_ids))
 }
