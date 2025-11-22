@@ -201,7 +201,6 @@ fn handle_message(
               // Check if this is a heartbeat from a known server
               case server_exists(state.servers, server_id) {
                 True -> {
-                  io.println("Heartbeat received from server: " <> server_id)
                   let updated_servers =
                     update_server_heartbeat(state.servers, server_id)
                   let new_state =
