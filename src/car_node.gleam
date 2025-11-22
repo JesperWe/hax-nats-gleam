@@ -20,7 +20,7 @@ import nats.{
 import sqlight
 import utils/random.{random_string}
 
-const capacity_per_core = 5
+const capacity_per_core = 20
 
 const car_actor_timeout = 10
 
