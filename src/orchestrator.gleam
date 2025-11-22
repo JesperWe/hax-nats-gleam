@@ -270,16 +270,12 @@ fn bridge_loop(
   actor_subject: Subject(Message),
 ) -> Nil {
   // Receive a NATS message (blocks until one arrives)
-  io.println("Bridge: Waiting for NATS message...")
   let nats_msg = process.receive_forever(nats_subject)
-  io.println("Bridge: Received NATS message!")
   // Extract the payload from NATSMessage and wrap it in our Message type
   case nats_msg {
     nats.NATSMessage(payload) -> {
-      io.println("Bridge: Forwarding to actor: " <> payload)
       // Send the NATS payload to the actor wrapped in our NATS message type
       process.send(actor_subject, NATS(payload))
-      io.println("Bridge: Message forwarded to actor")
     }
   }
   // Continue looping
