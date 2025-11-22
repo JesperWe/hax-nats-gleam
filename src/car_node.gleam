@@ -36,7 +36,7 @@ pub fn main() {
 
   let db_file = case envoy.get("DB_FILE") {
     Ok(host) -> host
-    Error(_) -> panic as "DB_FILE is not set"
+    Error(_) -> "trips.db"
   }
 
   let server_host = case envoy.get("NATS_HOST") {
