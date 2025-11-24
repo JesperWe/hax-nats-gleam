@@ -127,7 +127,8 @@ pub fn receive_messages_loop(
     }
     Error(mug.Timeout) -> Nil
     // Timeout is normal, just continue
-    Error(err) -> Nil //io.println("Error receiving message: " <> string.inspect(err))
+    Error(_err) -> Nil
+    //io.println("Error receiving message: " <> string.inspect(err))
   }
   receive_messages_loop(socket, actor)
 }
